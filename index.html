@@ -509,12 +509,14 @@ function persist(noSync){
   dirty=true; backupLocal();
   saving=saving.then(async()=>{
     if(!dirty)return;dirty=false;
+    // Пишем в запасной комплект ключей (A/B), и только потом переключаем meta на него.
+    // Если приложение закроют посреди сохранения, meta останется на целом старом комплекте.
     const data=JSON.stringify({ops,deleted:DELETED}), n=Math.ceil(data.length/CHUNK)||1, stamp=Date.now();
-    const meta=await store.get(["meta"]);const old=(JSON.parse(meta.meta||"{}").n)||0;
-    await setMany([...Array(n)].map((_,i)=>["ops"+i,data.slice(i*CHUNK,(i+1)*CHUNK)]));
+    let prev={};try{prev=JSON.parse((await store.get(["meta"])).meta||"{}")}catch(e){}
+    const set=prev.s==="A"?"B":"A";
+    await setMany([...Array(n)].map((_,i)=>["ops"+set+i,data.slice(i*CHUNK,(i+1)*CHUNK)]));
     await store.set("settings",JSON.stringify(settings||{}));
-    await store.set("meta",JSON.stringify({n,v:3,saved:stamp,upd:UPD}));
-    for(let i=n;i<old;i++)await store.del("ops"+i);
+    await store.set("meta",JSON.stringify({n,s:set,v:4,saved:stamp,upd:UPD}));
     const chk=JSON.parse((await store.get(["meta"])).meta||"{}");
     if(chk.saved!==stamp)throw new Error("проверка не прошла");
     $("storeInfo").textContent=storeText()+(CS?" ✓ Сохранено в облако в "+new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})+".":"");
@@ -573,7 +575,9 @@ async function pull(){
   finally{pulling=false}
 }
 const SYNC_RE=/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
-function scheduleSync(){clearTimeout(syncT);if(SYNC.url&&SYNC.key)syncT=setTimeout(syncNow,1500)}
+function scheduleSync(){clearTimeout(syncT);if(SYNC.url&&SYNC.key)syncT=setTimeout(syncNow,300)}
+// При сворачивании или закрытии приложения отправляем копию сразу, не дожидаясь таймера
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="hidden"&&syncT){clearTimeout(syncT);syncT=null;syncNow()}});
 async function syncNow(fromPull){
   if(!SYNC.url||!SYNC.key)return;
   $("syncStatus").textContent="Отправляю копию в Google Таблицу…";
@@ -584,7 +588,7 @@ async function syncNow(fromPull){
   }catch(e){$("syncStatus").textContent="Не удалось отправить копию: нет интернета. Отправится при следующем изменении."}
 }
 function rid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
-function changed(){UPD=Date.now();render();persist()}
+function changed(){UPD=Date.now();render();persist();scheduleSync()}
 db={
   collection(){return{
     add:async r=>{const id=rid();ops.push({id,...r});changed();try{TG&&TG.HapticFeedback&&TG.HapticFeedback.notificationOccurred("success")}catch(e){}return{id}},
@@ -592,18 +596,24 @@ db={
   }},
   doc(){return{set:async v=>{settings={...v};persist()}}}
 };
+function readSyncCfg(raw){try{if(raw){const v=JSON.parse(raw);if(SYNC_RE.test(v.url||"")&&typeof v.key==="string")SYNC={url:v.url,key:v.key.slice(0,100)}}}catch(e){}}
 async function load(){
+  // Настройки синхронизации читаем отдельно: даже если записи повреждены, таблица нас выручит
+  try{readSyncCfg((await store.get(["sync"])).sync)}catch(e){}
+  if(!SYNC.url){try{readSyncCfg(localStorage.getItem(PFX+"sync"))}catch(e){}}
+  let broken=false;
   try{
     const m=await store.get(["meta","settings"]);
     const meta=JSON.parse(m.meta||"{}"), n=meta.n||0; UPD=Number(meta.upd)||Number(meta.saved)||0;
-    if(n){const keys=[...Array(n)].map((_,i)=>"ops"+i);const parts=await store.get(keys);const raw=JSON.parse(keys.map(k=>parts[k]||"").join("")||"[]");
+    const pre=meta.s?"ops"+meta.s:"ops";
+    if(n){const keys=[...Array(n)].map((_,i)=>pre+i);const parts=await store.get(keys);const raw=JSON.parse(keys.map(k=>parts[k]||"").join("")||"[]");
       const arr=Array.isArray(raw)?raw:(raw.ops||[]);DELETED=Array.isArray(raw.deleted)?raw.deleted.map(String):[];
       ops=arr.map(cleanOp).filter(Boolean)}
     settings=m.settings?cleanSettings(JSON.parse(m.settings)):null;
-    try{const sy=(await store.get(["sync"])).sync;if(sy){const v=JSON.parse(sy);if(SYNC_RE.test(v.url||"")&&typeof v.key==="string")SYNC={url:v.url,key:v.key.slice(0,100)}}}catch(e){}
-  }catch(e){$("loading").textContent="Не удалось загрузить данные. Проверьте интернет и откройте приложение заново.";return}
+  }catch(e){broken=true;ops=[];DELETED=[];UPD=0}
   if(!ops.length){try{const bk=JSON.parse(localStorage.getItem(PFX+"backup")||"null");
-    if(bk&&Array.isArray(bk.ops)&&bk.ops.length){ops=bk.ops.map(cleanOp).filter(Boolean);settings=cleanSettings(bk.settings)||settings;setTimeout(persist,300)}}catch(e){}}
+    if(bk&&Array.isArray(bk.ops)&&bk.ops.length){ops=bk.ops.map(cleanOp).filter(Boolean);DELETED=Array.isArray(bk.deleted)?bk.deleted.map(String):[];settings=cleanSettings(bk.settings)||settings;UPD=Number(bk.upd)||0;setTimeout(persist,300)}}catch(e){}}
+  if(broken)$("msg").textContent=SYNC.url?"Данные в облаке Telegram повредились — восстанавливаю из Google Таблицы…":"Данные в облаке Telegram повредились. Откройте «Данные → Синхронизация» и вставьте адрес и ключ — записи загрузятся из таблицы.";
   gotOps=true;gotSet=true;
   
   $("dataCard").hidden=false;$("storeInfo").textContent=storeText();
@@ -627,6 +637,7 @@ $("syncSave").onclick=async()=>{
   if(url&&key.length<12){$("syncStatus").textContent="Вставьте ключ из скрипта целиком.";return}
   SYNC={url,key};
   try{await store.set("sync",JSON.stringify(SYNC))}catch(e){}
+  try{localStorage.setItem(PFX+"sync",JSON.stringify(SYNC))}catch(e){}
   if(url){pull();syncNow()}else $("syncStatus").textContent="Синхронизация выключена.";
 };
 $("importTextBtn").onclick=()=>importData($("importText").value);
@@ -639,7 +650,7 @@ if(TG){try{TG.ready();TG.expand();document.documentElement.dataset.theme=TG.colo
   TG.onEvent&&TG.onEvent("themeChanged",()=>{document.documentElement.dataset.theme=TG.colorScheme==="dark"?"dark":"light"})}catch(e){}}
 load();
 // ---------- Автообновление: если на GitHub лежит более новая версия, открываем её ----------
-const APP_VERSION="7";
+const APP_VERSION="8";
 (async()=>{try{
   const r=await fetch(location.pathname+"?check="+Date.now(),{cache:"no-store"});if(!r.ok)return;
   const m=(await r.text()).match(/const APP_VERSION="(\d+)"/);if(!m||m[1]===APP_VERSION)return;
