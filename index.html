@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://script.google.com https://script.googleusercontent.com; frame-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
 <title>Бюджет</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -213,6 +215,14 @@ li .note small{display:block;color:var(--muted);font-size:12px}
         <textarea id="importText" rows="4" style="width:100%;margin-top:8px;font:12px var(--f-num);color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px" placeholder='{"app":"budget",...}'></textarea>
         <button class="ghost" type="button" id="importTextBtn" style="margin-top:6px">Загрузить из текста</button>
       </details>
+      <details id="syncBox"><summary class="sub" style="cursor:pointer">Синхронизация с Google Таблицей</summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <input type="text" id="syncUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" aria-label="Адрес приёмника">
+          <input type="text" id="syncKey" placeholder="Ключ синхронизации" autocomplete="off" aria-label="Ключ синхронизации">
+          <button class="ghost" type="button" id="syncSave">Сохранить и отправить сейчас</button>
+        </div>
+      </details>
+      <div class="sub" id="syncStatus"></div>
       <button class="ghost" type="button" id="exportBtn">Скопировать все данные (резервная копия)</button>
       <div class="msg" id="dataMsg"></div>
     </div>
@@ -402,7 +412,7 @@ function render(){
   $("s-now").textContent=fmt(nowBal); $("s-now").classList.toggle("neg",nowBal<0);
   $("s-debt").textContent=fmt(left); {const fee=+s.saveGoal||0;let n=1;while(fee>0&&semDeadline(n)<tk)n++;const prog=Math.max(0,savedNow-fee*(n-1));
    $("s-save").textContent="семестр "+fmt(prog)+(fee?" из "+fmt(fee):"")+(tripNow?" · отпуск "+fmt(tripNow):"");
-   $("s-short").innerHTML=(PLAN._short||[]).map(x=>`<span class="chip warn">К оплате за ${x.name} не хватит ~${fmt(x.short)}</span>`).join(" ");} $("s-total").textContent=closeK?plabel(closeK).replace(" · ЗП","").replace(" · аванс",""):"не успевает";
+   $("s-short").innerHTML=(PLAN._short||[]).map(x=>`<span class="chip warn">К оплате за ${x.name} не хватит ~${fmt(x.short)}</span>`).join(" ");} $("s-total").textContent=closeK?plabel(closeK).replace(" · ЗП","").replace(" · аванс",""):debtAll>0?"не успевает":"—";
   $("s-chip").innerHTML= nowBal<0?'<span class="chip warn">Ушли в минус</span>':nowBal<5000?'<span class="chip warn">Запас меньше 5 000 ₽</span>':'<span class="chip">'+plabel(tk)+'</span>';
   $("d-paid").textContent=fmt(paidNow); $("d-left").textContent=fmt(left); $("d-total").textContent=fmt(total);
   for(const f of ["opening","reserve","funShare","debtStart","semester","saveGoal"]){const el=$(f);if(document.activeElement!==el)el.value=s[f]??(f==="reserve"?3000:f==="funShare"?50:0)}
@@ -474,23 +484,61 @@ const store={
   del(k){if(CS)return new Promise((res,rej)=>CS.removeItem(k,(e)=>e?rej(e):res(true)));
     try{localStorage.removeItem(PFX+k)}catch(e){}return Promise.resolve(true)}
 };
-const CHUNK=3800;
+const CHUNK=1000; // Telegram ограничивает размер значения; с русскими буквами берём с запасом
 let saving=Promise.resolve(), dirty=false;
+function backupLocal(){try{localStorage.setItem(PFX+"backup",JSON.stringify({ops,settings,saved:Date.now()}))}catch(e){}}
+async function setMany(pairs){for(let i=0;i<pairs.length;i+=5)await Promise.all(pairs.slice(i,i+5).map(([k,v])=>store.set(k,v)))}
 function persist(){
-  dirty=true;
+  dirty=true; backupLocal();
   saving=saving.then(async()=>{
     if(!dirty)return;dirty=false;
-    const data=JSON.stringify(ops), n=Math.ceil(data.length/CHUNK)||1;
+    const data=JSON.stringify(ops), n=Math.ceil(data.length/CHUNK)||1, stamp=Date.now();
     const meta=await store.get(["meta"]);const old=(JSON.parse(meta.meta||"{}").n)||0;
-    for(let i=0;i<n;i++)await store.set("ops"+i,data.slice(i*CHUNK,(i+1)*CHUNK));
-    await store.set("meta",JSON.stringify({n,v:1,saved:Date.now()}));
-    for(let i=n;i<old;i++)await store.del("ops"+i);
+    await setMany([...Array(n)].map((_,i)=>["ops"+i,data.slice(i*CHUNK,(i+1)*CHUNK)]));
     await store.set("settings",JSON.stringify(settings||{}));
-    $("storeInfo").textContent=storeText();
-  }).catch(()=>{$("msg").textContent="Не удалось сохранить. Проверьте интернет и повторите.";});
+    await store.set("meta",JSON.stringify({n,v:2,saved:stamp}));
+    for(let i=n;i<old;i++)await store.del("ops"+i);
+    const chk=JSON.parse((await store.get(["meta"])).meta||"{}");
+    if(chk.saved!==stamp)throw new Error("проверка не прошла");
+    $("storeInfo").textContent=storeText()+(CS?" ✓ Сохранено в облако в "+new Date().toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})+".":"");
+    scheduleSync();
+  }).catch(e=>{const t="Не удалось сохранить в облако Telegram ("+(e&&e.message||e)+"). Записи сохранены на этом телефоне, повторю при следующем изменении.";
+    $("msg").textContent=t;$("storeInfo").textContent=t;dirty=true;});
   return saving;
 }
-function storeText(){return (CS?"Данные хранятся в облаке Telegram и доступны с любого вашего устройства.":"Вы открыли страницу не в Telegram: данные хранятся только в этом браузере.")+" Записей: "+ops.length+"."}
+function storeText(){return "Версия 3. "+(CS?"Данные хранятся в облаке Telegram и доступны с любого вашего устройства.":"Вы открыли страницу не в Telegram: данные хранятся только в этом браузере.")+" Записей: "+ops.length+"."}
+// Проверка записей: принимаем только ожидаемые поля и форматы
+const TYPES_OK=["income","expense","debt","save"];
+function cleanOp(o){
+  if(!o||typeof o!=="object")return null;
+  if(typeof o.period!=="string"||!/^\d{4}-\d{2}-[ab]$/.test(o.period))return null;
+  if(!TYPES_OK.includes(o.type))return null;
+  const amount=Number(o.amount);if(!isFinite(amount)||amount<0||amount>1e9)return null;
+  const r={id:String(o.id||"").replace(/[^A-Za-z0-9_-]/g,"").slice(0,40)||rid(),period:o.period,type:o.type,amount,
+    note:String(o.note||"").slice(0,120),createdAt:Number(o.createdAt)||Date.now()};
+  if(o.type==="expense")r.cat=CATS[o.cat]?o.cat:"other";
+  if(o.plan)r.plan=true; if(o.goal==="trip"||o.goal==="sem")r.goal=o.goal;
+  return r;
+}
+function cleanSettings(st){
+  if(!st||typeof st!=="object")return null;const n=v=>{v=Number(v);return isFinite(v)&&v>=0&&v<1e9?v:0};
+  return {opening:n(st.opening),reserve:st.reserve==null?3000:n(st.reserve),funShare:st.funShare==null?50:Math.min(100,n(st.funShare)),
+    debtStart:n(st.debtStart),semester:n(st.semester),saveGoal:n(st.saveGoal),
+    periods:Array.isArray(st.periods)?st.periods.filter(k=>typeof k==="string"&&/^\d{4}-\d{2}-[ab]$/.test(k)):[]};
+}
+// ---------- Синхронизация: копия записей уходит в вашу Google Таблицу ----------
+let SYNC={url:"",key:""}, syncT=null;
+const SYNC_RE=/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/;
+function scheduleSync(){clearTimeout(syncT);if(SYNC.url&&SYNC.key)syncT=setTimeout(syncNow,1500)}
+async function syncNow(){
+  if(!SYNC.url||!SYNC.key)return;
+  $("syncStatus").textContent="Отправляю копию в Google Таблицу…";
+  try{
+    await fetch(SYNC.url,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},
+      body:JSON.stringify({secret:SYNC.key,ops,settings})});
+    const t=new Date();$("syncStatus").textContent="Копия в Google Таблице обновлена в "+t.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})+".";
+  }catch(e){$("syncStatus").textContent="Не удалось отправить копию: нет интернета. Отправится при следующем изменении."}
+}
 function rid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 function changed(){render();persist()}
 db={
@@ -504,22 +552,35 @@ async function load(){
   try{
     const m=await store.get(["meta","settings"]);
     const n=(JSON.parse(m.meta||"{}").n)||0;
-    if(n){const keys=[...Array(n)].map((_,i)=>"ops"+i);const parts=await store.get(keys);ops=JSON.parse(keys.map(k=>parts[k]||"").join("")||"[]")}
-    settings=m.settings?JSON.parse(m.settings):null;
+    if(n){const keys=[...Array(n)].map((_,i)=>"ops"+i);const parts=await store.get(keys);ops=(JSON.parse(keys.map(k=>parts[k]||"").join("")||"[]")||[]).map(cleanOp).filter(Boolean)}
+    settings=m.settings?cleanSettings(JSON.parse(m.settings)):null;
+    try{const sy=(await store.get(["sync"])).sync;if(sy){const v=JSON.parse(sy);if(SYNC_RE.test(v.url||"")&&typeof v.key==="string")SYNC={url:v.url,key:v.key.slice(0,100)}}}catch(e){}
   }catch(e){$("loading").textContent="Не удалось загрузить данные. Проверьте интернет и откройте приложение заново.";return}
+  if(!ops.length){try{const bk=JSON.parse(localStorage.getItem(PFX+"backup")||"null");
+    if(bk&&Array.isArray(bk.ops)&&bk.ops.length){ops=bk.ops.map(cleanOp).filter(Boolean);settings=cleanSettings(bk.settings)||settings;setTimeout(persist,300)}}catch(e){}}
   gotOps=true;gotSet=true;
   
   $("dataCard").hidden=false;$("storeInfo").textContent=storeText();
+  $("syncUrl").value=SYNC.url;$("syncKey").value=SYNC.key;
+  $("syncStatus").textContent=SYNC.url?"Синхронизация с Google Таблицей включена.":"";
   if(!ops.length){$("dataMsg").textContent="Записей пока нет. Загрузите файл с данными кнопкой выше.";$("msg").textContent="Записей пока нет: загрузите файл с данными в разделе «Данные» внизу страницы."}
   ready();
 }
 function importData(text){
   let d;try{d=JSON.parse(text)}catch(e){$("dataMsg").textContent="Это не файл с данными бюджета.";return}
   if(!d||!Array.isArray(d.ops)){$("dataMsg").textContent="В файле нет записей бюджета.";return}
-  ops=d.ops.map(o=>({...o,id:o.id||rid()}));settings=d.settings||settings;curK=null;
+  ops=d.ops.map(cleanOp).filter(Boolean);settings=cleanSettings(d.settings)||settings;curK=null;
   changed();$("dataMsg").textContent="Загружено записей: "+ops.length+".";
 }
 $("importFile").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>importData(r.result);r.readAsText(f);e.target.value=""});
+$("syncSave").onclick=async()=>{
+  const url=$("syncUrl").value.trim(), key=$("syncKey").value.trim();
+  if(url&&!SYNC_RE.test(url)){$("syncStatus").textContent="Адрес должен выглядеть так: https://script.google.com/macros/s/…/exec";return}
+  if(url&&key.length<12){$("syncStatus").textContent="Вставьте ключ из скрипта целиком.";return}
+  SYNC={url,key};
+  try{await store.set("sync",JSON.stringify(SYNC))}catch(e){}
+  if(url)syncNow();else $("syncStatus").textContent="Синхронизация выключена.";
+};
 $("importTextBtn").onclick=()=>importData($("importText").value);
 $("exportBtn").onclick=async()=>{
   const text=JSON.stringify({app:"budget",version:1,exported:new Date().toISOString().slice(0,10),ops,settings});
