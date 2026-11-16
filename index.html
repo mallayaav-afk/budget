@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
 html,body{margin:0}
+[hidden]{display:none!important}
 :root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 
 /* Layout: one narrow column like a notebook page — summary, add form, period sheets with running balance */
@@ -57,14 +58,15 @@ form{display:flex;flex-direction:column;gap:10px}
 #t-expense:checked+label{background:color-mix(in srgb,var(--minus) 14%,transparent);color:var(--minus)}
 #t-debt:checked+label{background:color-mix(in srgb,var(--debt) 16%,transparent);color:var(--debt)}
 #t-save:checked+label{background:color-mix(in srgb,var(--save) 16%,transparent);color:var(--save)}
-.cat-seg{display:flex;flex-wrap:wrap;gap:6px;border:0;border-radius:0;overflow:visible}
-.cat-seg label{flex:1 1 auto;padding:8px 10px!important}
+.cat-seg{display:flex;flex-wrap:nowrap;gap:6px;border:0;border-radius:0;overflow-x:auto;scrollbar-width:none;margin:0 -2px;padding:2px}
+.cat-seg::-webkit-scrollbar{display:none}
+.cat-seg label{flex:0 0 auto;padding:8px 12px!important;white-space:nowrap}
 .cat-seg label{font-size:13px;font-weight:500;padding:8px 2px;border:1px solid var(--line)!important;border-radius:9px;line-height:1.2}
 .cat-seg input:checked+label{background:var(--pen-soft);color:var(--pen);border-color:var(--pen)!important;font-weight:600}
 
 .seg input:focus-visible+label{outline:2px solid var(--pen);outline-offset:-2px}
 .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:10px}
-input[type=text],input[type=number],select{width:100%;font:inherit;color:var(--ink);background:var(--paper);
+input[type=text],input[type=number],input[type=date],select{width:100%;min-height:44px;-webkit-appearance:none;appearance:none;font:inherit;color:var(--ink);background:var(--paper);
   border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
 input[type=number]{font-family:var(--f-num)}
 input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--pen);outline-offset:1px}
@@ -149,8 +151,11 @@ li .note small{display:block;color:var(--muted);font-size:12px}
     <div style="grid-column:1/-1;border-top:1px dashed var(--line);padding-top:10px"><div class="label">В копилке</div><div class="v s" id="s-save" style="font-size:20px">—</div><div id="s-short" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
   </section>
 
-  <section class="card">
-    <form id="add" autocomplete="off">
+  <section class="card" id="addCard" style="padding:0">
+    <button type="button" id="formToggle" aria-expanded="false" aria-controls="add"
+      style="width:100%;display:flex;justify-content:space-between;align-items:center;background:none;border:0;color:var(--ink);padding:14px 16px;font-weight:600;font-size:16px">
+      <span>+ Добавить запись</span><span id="formChev" aria-hidden="true" style="color:var(--muted);transition:transform .15s">›</span></button>
+    <form id="add" autocomplete="off" hidden style="padding:0 16px 16px">
       <div class="seg" role="radiogroup" aria-label="Тип">
         <input type="radio" name="type" id="t-income" value="income"><label for="t-income">Доход</label>
         <input type="radio" name="type" id="t-expense" value="expense" checked><label for="t-expense">Расход</label>
@@ -171,12 +176,13 @@ li .note small{display:block;color:var(--muted);font-size:12px}
       </div>
       <div class="row">
         <input type="number" id="amount" inputmode="decimal" min="0" step="any" placeholder="Сумма, ₽" required aria-label="Сумма">
-        <select id="period" aria-label="Период"></select>
+        <input type="date" id="date" required aria-label="Дата">
       </div>
+      <div class="sub" id="dateHint" style="margin-top:-4px"></div>
       <input type="text" id="note" placeholder="На что / откуда (проезд, зарплата…)" maxlength="80" aria-label="Комментарий">
       <button class="primary" id="addBtn" type="submit" disabled>Добавить</button>
-      <div class="msg" id="msg"></div>
     </form>
+    <div class="msg" id="msg" style="padding:0 16px 12px"></div>
   </section>
 
   <div class="pnav" id="pnav" hidden>
@@ -243,6 +249,13 @@ function nextKey(k){const[y,m,h]=k.split("-");if(h==="a")return `${y}-${m}-b`;le
 function todayKey(){const d=new Date();let y=d.getFullYear(),m=d.getMonth()+1,day=d.getDate(),h;
   if(day>=25)h="b";else if(day>=10)h="a";else{h="b";m--;if(m<1){m=12;y--}}
   return `${y}-${String(m).padStart(2,"0")}-${h}`}
+// Период по дате: 10–24 число — ЗП этого месяца, 25-е и позже — аванс этого месяца, 1–9 — аванс прошлого месяца
+function periodOfDate(ds){let[y,m,d]=ds.split("-").map(Number),h;
+  if(d>=25)h="b";else if(d>=10)h="a";else{h="b";m--;if(m<1){m=12;y--}}
+  return `${y}-${String(m).padStart(2,"0")}-${h}`}
+function todayStr(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+function updDateHint(){const el=$("date");if(!el.value)el.value=todayStr();const k=periodOfDate(el.value);
+  $("dateHint").textContent="Попадёт в период: "+plabel(k)+" ("+prange(k)+")"+(k>todayKey()?" — как план":"")}
 const MGEN=["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
 function prange(k){const[y,m,h]=k.split("-");const i=+m-1;return h==="a"?`10–24 ${MGEN[i]}`:`25 ${MGEN[i]} – 9 ${MGEN[(i+1)%12]}`}
 const $=id=>document.getElementById(id);
@@ -330,15 +343,12 @@ const amt=o=>+o.amount||0;
 function render(){
   const s=S(), list=periodsList();
   const PLAN=computePlan(list,todayKey());
-  // period select
-  const sel=$("period"), cur=sel.value||(list.includes(todayKey())?todayKey():list[list.length-1]);
-  sel.innerHTML=""; list.forEach(k=>{const o=document.createElement("option");o.value=k;o.textContent=plabel(k);sel.appendChild(o)});
-  if(cur)sel.value=cur;
+  updDateHint();
   // period cards
   const box=$("periods"); box.innerHTML=""; PKEYS=list;
   let bal=+s.opening||0, paid=0, saved=0, trip=0, nowBal=null, closeK=null, paidNow=0, savedNow=0, tripNow=0; const debtAll=(+s.debtStart||0)+(+s.semester||0); const tk=todayKey();
   list.forEach(k=>{
-    const items=ops.filter(o=>o.period===k&&!o.auto).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0)).concat(PLAN[k]||[]);
+    const items=ops.filter(o=>o.period===k&&!o.auto).sort((a,b)=>((a.date||"")<(b.date||"")?-1:(a.date||"")>(b.date||"")?1:(a.createdAt||0)-(b.createdAt||0))).concat(PLAN[k]||[]);
     const past=k<=tk, hasPlan=items.some(o=>o.plan), GT=groupTotals(items,pmode(k,tk)), tot=t=>Object.values(GT).filter(x=>x.type===t).reduce((a,x)=>a+x.eff,0);
     const inc=tot("income"), exp=tot("expense"), dbt=tot("debt"), sav=tot("save");
     const start=bal; bal=start+inc-exp-dbt-sav; paid+=dbt; const tr=items.filter(o=>o.type==="save"&&o.goal==="trip").reduce((a,o)=>a+amt(o),0); trip+=tr; saved+=sav-tr; if(!closeK&&debtAll>0&&paid>=debtAll)closeK=k;
@@ -386,7 +396,7 @@ function render(){
       const li=document.createElement("li");
       const n=document.createElement("div");n.className="note";
       const tag=o.type==="expense"?CATS[catOf(o)].toLowerCase():TYPES[o.type];
-      n.textContent=o.note||tag.charAt(0).toUpperCase()+tag.slice(1);
+      n.textContent=(o.date?o.date.slice(8,10)+"."+o.date.slice(5,7)+" · ":"")+(o.note||tag.charAt(0).toUpperCase()+tag.slice(1));
       if(o.note||o.virtual||o.plan){const sm=document.createElement("small");sm.textContent=o.virtual?"план, считается сам":o.plan&&o.type==="expense"&&ENV.includes(catOf(o))?"бюджет на период, покупки записывайте отдельно":o.plan?"план":tag;n.appendChild(sm)}
       const a=document.createElement("span");a.className="num "+CLS[o.type];
       const isBudget=o.plan&&o.type==="expense"&&ENV.includes(catOf(o));
@@ -430,7 +440,9 @@ $("add").addEventListener("submit",async e=>{
   const amount=parseFloat($("amount").value.replace(",","."));
   if(!(amount>0)){$("msg").textContent="Введите сумму больше нуля.";return}
   const type=document.querySelector('input[name=type]:checked').value;
-  const rec={type,amount,period:$("period").value,note:$("note").value.trim(),createdAt:Date.now()};
+  const dv=$("date").value||todayStr();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(dv)){$("msg").textContent="Выберите дату.";return}
+  const rec={type,amount,date:dv,period:periodOfDate(dv),note:$("note").value.trim(),createdAt:Date.now()};
   if(type==="expense")rec.cat=document.querySelector('input[name=cat]:checked').value;
   if(rec.period>todayKey())rec.plan=true;
   $("addBtn").disabled=true;
@@ -444,6 +456,11 @@ $("pNext").onclick=()=>{const i=PKEYS.indexOf(curK);if(i<PKEYS.length-1)goTo(PKE
 $("periods").addEventListener("touchstart",e=>{const t=e.touches[0];sx=t.clientX;sy=t.clientY},{passive:true});
 $("periods").addEventListener("touchend",e=>{if(sx===null)return;const t=e.changedTouches[0],dx=t.clientX-sx,dy=t.clientY-sy;sx=null;
   if(Math.abs(dx)>50&&Math.abs(dx)>1.5*Math.abs(dy)){(dx<0?$("pNext"):$("pPrev")).click()}},{passive:true});
+function setForm(open){$("add").hidden=!open;$("formToggle").setAttribute("aria-expanded",open);$("formChev").style.transform=open?"rotate(90deg)":"";
+  try{localStorage.setItem(PFX+"formOpen",open?"1":"0")}catch(e){}}
+$("formToggle").onclick=()=>{const open=$("add").hidden;setForm(open);if(open)setTimeout(()=>$("amount").focus(),50)};
+try{if(localStorage.getItem(PFX+"formOpen")==="1")setForm(true)}catch(e){}
+$("date").addEventListener("change",updDateHint);$("date").addEventListener("input",updDateHint);
 function syncCat(){$("catSeg").hidden=document.querySelector('input[name=type]:checked').value!=="expense"}
 document.querySelectorAll('input[name=type]').forEach(r=>r.addEventListener("change",syncCat));
 let saveTimer=null;
@@ -518,6 +535,7 @@ function cleanOp(o){
     note:String(o.note||"").slice(0,120),createdAt:Number(o.createdAt)||Date.now()};
   if(o.type==="expense")r.cat=CATS[o.cat]?o.cat:"other";
   if(o.plan)r.plan=true; if(o.goal==="trip"||o.goal==="sem")r.goal=o.goal;
+  if(typeof o.date==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(o.date))r.date=o.date;
   return r;
 }
 function cleanSettings(st){
@@ -570,7 +588,7 @@ function importData(text){
   let d;try{d=JSON.parse(text)}catch(e){$("dataMsg").textContent="Это не файл с данными бюджета.";return}
   if(!d||!Array.isArray(d.ops)){$("dataMsg").textContent="В файле нет записей бюджета.";return}
   ops=d.ops.map(cleanOp).filter(Boolean);settings=cleanSettings(d.settings)||settings;curK=null;
-  changed();$("dataMsg").textContent="Загружено записей: "+ops.length+".";
+  changed();$("msg").textContent="";$("dataMsg").textContent="Загружено записей: "+ops.length+".";
 }
 $("importFile").addEventListener("change",e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>importData(r.result);r.readAsText(f);e.target.value=""});
 $("syncSave").onclick=async()=>{
