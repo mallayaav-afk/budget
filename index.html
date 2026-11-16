@@ -141,7 +141,6 @@ li .note small{display:block;color:var(--muted);font-size:12px}
 <div class="wrap">
   <header>
     <h1>Бюджет</h1>
-    <div class="sub">Период зарплаты — с 10 по 24 число, период аванса — с 25 по 9 число следующего месяца. Остаток переходит дальше сам.</div>
   </header>
 
   <section class="card sum" id="summary" aria-live="polite">
@@ -650,7 +649,7 @@ if(TG){try{TG.ready();TG.expand();document.documentElement.dataset.theme=TG.colo
   TG.onEvent&&TG.onEvent("themeChanged",()=>{document.documentElement.dataset.theme=TG.colorScheme==="dark"?"dark":"light"})}catch(e){}}
 load();
 // ---------- Автообновление: если на GitHub лежит более новая версия, открываем её ----------
-const APP_VERSION="8";
+const APP_VERSION="9";
 (async()=>{try{
   const r=await fetch(location.pathname+"?check="+Date.now(),{cache:"no-store"});if(!r.ok)return;
   const m=(await r.text()).match(/const APP_VERSION="(\d+)"/);if(!m||m[1]===APP_VERSION)return;
