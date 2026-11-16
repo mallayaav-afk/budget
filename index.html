@@ -138,6 +138,11 @@ header{display:flex;justify-content:space-between;align-items:center;gap:12px;po
 .menuBtn{background:var(--sheet);border:1px solid var(--line);color:var(--ink);border-radius:10px;width:44px;height:40px;font-size:22px;line-height:1;padding:0 0 6px}
 .menuBtn[aria-expanded="true"]{background:var(--pen-soft);color:var(--pen);border-color:var(--pen)}
 .card.menu{position:absolute;top:calc(100% + 8px);left:0;right:0;z-index:30;box-shadow:0 12px 32px rgba(0,0,0,.22)}
+.edit-ov{position:fixed;inset:0;z-index:50;background:rgba(10,12,20,.55);display:flex;align-items:flex-end;justify-content:center}
+.edit-sh{width:100%;max-width:560px;background:var(--sheet);border:1px solid var(--line);border-radius:16px 16px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:10px;max-height:90vh;overflow:auto}
+.edit-sh h3{font-family:var(--f-display);font-weight:500;font-size:16px;margin:0}
+.edit-row{display:flex;gap:8px}.edit-row>*{flex:1}
+li.editable .note,li.editable>.num{cursor:pointer}
 </style>
 </head>
 <body>
@@ -219,7 +224,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:12px;po
   <div id="periods"><div class="card state" id="loading">Загружаю записи…</div></div>
 
   <div class="dots" id="dots" aria-hidden="true"></div>
-  <div class="sub" style="text-align:center">В текущем периоде: <span class="st st-ok" style="display:inline-block">в плане</span> <span class="st st-bad" style="display:inline-block">перерасход</span> <span class="st st-warn" style="display:inline-block">вне плана</span>. Записи в будущие периоды сохраняются как план.</div>
+  <div class="sub" style="text-align:center">В текущем периоде: <span class="st st-ok" style="display:inline-block">в плане</span> <span class="st st-bad" style="display:inline-block">перерасход</span> <span class="st st-warn" style="display:inline-block">вне плана</span>. Записи в будущие периоды сохраняются как план. Нажмите на запись, чтобы изменить её.</div>
   <button class="ghost" id="addPeriod" type="button" hidden>+ Добавить следующий период</button>
 
   <section class="card" id="debtCard" hidden>
@@ -237,6 +242,26 @@ header{display:flex;justify-content:space-between;align-items:center;gap:12px;po
     </div>
   </section>
 
+</div>
+
+<div class="edit-ov" id="editOv" hidden>
+  <div class="edit-sh" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+    <h3 id="editTitle">Изменить запись</h3>
+    <div class="sub" id="editInfo"></div>
+    <div id="editStep1" style="display:flex;flex-direction:column;gap:10px">
+      <input type="number" id="editAmount" inputmode="decimal" min="0" step="any" aria-label="Сумма" class="num">
+      <input type="text" id="editNote" maxlength="80" placeholder="На что / откуда" aria-label="Комментарий">
+      <select id="editCat" aria-label="Раздел расхода"></select>
+      <div class="edit-row"><button type="button" class="ghost" id="editCancel">Отмена</button><button type="button" class="primary" id="editSave">Сохранить</button></div>
+    </div>
+    <div id="editStep2" hidden style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-weight:600">Изменить и в следующих периодах?</div>
+      <div class="sub" id="editAsk"></div>
+      <button type="button" class="primary" id="editAll">Да, во всех следующих</button>
+      <button type="button" class="ghost" id="editOne">Только в этом периоде</button>
+    </div>
+    <div class="msg" id="editMsg"></div>
+  </div>
 </div>
 
 <script>
@@ -408,6 +433,7 @@ function render(){
       const b=document.createElement("button");b.type="button";b.className="del"+(armed===o.id?" armed":"");
       b.textContent=armed===o.id?"Удалить":"×";b.setAttribute("aria-label","Удалить запись");
       b.onclick=()=>delOp(o.id); if(o.virtual){b.disabled=true;b.style.visibility="hidden"}
+      if(!o.virtual){li.classList.add("editable");n.onclick=a.onclick=()=>openEdit(o.id);n.setAttribute("role","button");n.tabIndex=0;n.onkeydown=e=>{if(e.key==="Enter")openEdit(o.id)}}
       li.append(n,a,b);ul.appendChild(li);
       });
       d.appendChild(ul);groups.appendChild(d);
@@ -540,7 +566,7 @@ function cleanOp(o){
   const r={id:String(o.id||"").replace(/[^A-Za-z0-9_-]/g,"").slice(0,40)||rid(),period:o.period,type:o.type,amount,
     note:String(o.note||"").slice(0,120),createdAt:Number(o.createdAt)||Date.now()};
   if(o.type==="expense")r.cat=CATS[o.cat]?o.cat:"other";
-  if(o.plan)r.plan=true; if(o.goal==="trip"||o.goal==="sem")r.goal=o.goal;
+  if(Number(o.mod)>0)r.mod=Number(o.mod); if(o.plan)r.plan=true; if(o.goal==="trip"||o.goal==="sem")r.goal=o.goal;
   if(typeof o.date==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(o.date))r.date=o.date;
   return r;
 }
@@ -556,10 +582,10 @@ let SYNC={url:"",key:""}, syncT=null, DELETED=[], UPD=0;
 function mergeState(a,b){
   const newer=(b.updated||0)>=(a.updated||0)?b:a, older=newer===a?b:a;
   const del=new Set([...(a.deleted||[]),...(b.deleted||[])]), map=new Map();
-  [...(older.ops||[]),...(newer.ops||[])].forEach(o=>{if(o&&o.id&&!del.has(o.id))map.set(o.id,o)});
+  [...(older.ops||[]),...(newer.ops||[])].forEach(o=>{if(!o||!o.id||del.has(o.id))return;const p=map.get(o.id);if(p&&(+p.mod||0)>(+o.mod||0))return;map.set(o.id,o)});
   return {ops:[...map.values()],settings:newer.settings||older.settings||null,deleted:[...del].slice(-3000),updated:Math.max(a.updated||0,b.updated||0)};
 }
-function sig(st){return st.ops.map(o=>o.id+":"+o.amount+":"+o.period).sort().join("|")+"#"+JSON.stringify(st.settings||{})}
+function sig(st){return st.ops.map(o=>o.id+":"+o.amount+":"+o.period+":"+(o.note||"")+":"+(o.cat||"")+":"+(o.mod||0)).sort().join("|")+"#"+JSON.stringify(st.settings||{})}
 // Забрать свежие данные из таблицы (изменения со страницы в Claude)
 let pulling=false;
 async function pull(){
@@ -596,6 +622,7 @@ function changed(){UPD=Date.now();render();persist();scheduleSync()}
 db={
   collection(){return{
     add:async r=>{const id=rid();ops.push({id,...r});changed();try{TG&&TG.HapticFeedback&&TG.HapticFeedback.notificationOccurred("success")}catch(e){}return{id}},
+    update:async(ids,patch)=>{const t=Date.now(),set=new Set(ids);ops=ops.map(o=>set.has(o.id)?{...o,...patch,mod:t}:o);changed()},
     doc:id=>({delete:async()=>{ops=ops.filter(o=>o.id!==id);if(!DELETED.includes(id))DELETED.push(id);changed()}})
   }},
   doc(){return{set:async v=>{settings={...v};persist()}}}
@@ -654,7 +681,7 @@ if(TG){try{TG.ready();TG.expand();document.documentElement.dataset.theme=TG.colo
   TG.onEvent&&TG.onEvent("themeChanged",()=>{document.documentElement.dataset.theme=TG.colorScheme==="dark"?"dark":"light"})}catch(e){}}
 load();
 // ---------- Автообновление: если на GitHub лежит более новая версия, открываем её ----------
-const APP_VERSION="10";
+const APP_VERSION="11";
 (async()=>{try{
   const r=await fetch(location.pathname+"?check="+Date.now(),{cache:"no-store"});if(!r.ok)return;
   const m=(await r.text()).match(/const APP_VERSION="(\d+)"/);if(!m||m[1]===APP_VERSION)return;
@@ -667,6 +694,42 @@ const APP_VERSION="10";
   b.addEventListener("click",e=>{e.stopPropagation();set(p.hidden)});
   document.addEventListener("click",e=>{if(!p.hidden&&!p.contains(e.target)&&e.target!==b)set(false)});
   document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!p.hidden){set(false);b.focus()}});
+})();
+// Изменение записи; для плановой — вопрос, менять ли такие же записи в следующих периодах
+(function(){
+  const ov=$("editOv"),cs=$("editCat");let cur=null,patch=null,same=[];
+  cs.innerHTML=Object.entries(CATS).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  const norm=v=>String(v||"").trim().toLowerCase();
+  function close(){ov.hidden=true;cur=null}
+  window.openEdit=function(id){
+    const o=ops.find(x=>x.id===id);if(!o||!db)return;cur=o;
+    $("editStep1").hidden=false;$("editStep2").hidden=true;$("editMsg").textContent="";
+    $("editAmount").value=amt(o);$("editNote").value=o.note||"";cs.value=catOf(o);cs.hidden=o.type!=="expense";
+    $("editInfo").textContent=plabel(o.period)+" · "+(o.type==="expense"?"расход":TYPES[o.type])+(o.plan?" · план":"");
+    ov.hidden=false;setTimeout(()=>$("editAmount").focus(),50);
+  };
+  async function apply(ids){
+    try{await db.collection("ops").update(ids,patch);close();$("msg").textContent=ids.length>1?"Изменено: эта запись и ещё "+(ids.length-1)+" в следующих периодах.":"Запись изменена."}
+    catch(e){$("editMsg").textContent="Не сохранилось: нет связи или нет прав на изменение."}
+  }
+  $("editSave").onclick=()=>{
+    if(!cur)return;const a=parseFloat(String($("editAmount").value).replace(",","."));
+    if(!(a>=0)){$("editMsg").textContent="Введите сумму.";return}
+    patch={amount:a,note:$("editNote").value.trim().slice(0,80)};if(cur.type==="expense")patch.cat=CATS[cs.value]?cs.value:"other";
+    if(patch.amount===amt(cur)&&patch.note===(cur.note||"")&&(cur.type!=="expense"||patch.cat===catOf(cur))){close();return}
+    same=cur.plan?ops.filter(x=>x.id!==cur.id&&x.plan&&!x.auto&&x.period>cur.period&&x.type===cur.type&&(x.type!=="expense"||catOf(x)===catOf(cur))&&norm(x.note)===norm(cur.note)&&amt(x)===amt(cur)).sort((p,q)=>p.period<q.period?-1:1):[];
+    if(!same.length){apply([cur.id]);return}
+    const nm=cur.note||(cur.type==="expense"?CATS[catOf(cur)]:TYPES[cur.type]);
+    $("editAsk").textContent=`Такая же запись «${nm}» на ${fmt(amt(cur))} есть ещё в ${same.length} след. периодах (${plabel(same[0].period)} — ${plabel(same[same.length-1].period)}). Записи, которые вы уже меняли вручную, не затронутся.`;
+    $("editAll").textContent="Да, во всех следующих ("+(same.length+1)+" шт.)";
+    $("editStep1").hidden=true;$("editStep2").hidden=false;$("editAll").focus();
+  };
+  $("editAll").onclick=()=>apply([cur.id,...same.map(x=>x.id)]);
+  $("editOne").onclick=()=>apply([cur.id]);
+  $("editCancel").onclick=close;
+  ov.addEventListener("click",e=>{if(e.target===ov)close()});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!ov.hidden)close()});
+  $("editAmount").addEventListener("keydown",e=>{if(e.key==="Enter")$("editSave").click()});
 })();
 </script>
 </body>
