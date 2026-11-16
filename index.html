@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://script.google.com https://script.googleusercontent.com; frame-src 'none'; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; frame-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <title>Бюджет</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -523,7 +523,7 @@ function persist(){
     $("msg").textContent=t;$("storeInfo").textContent=t;dirty=true;});
   return saving;
 }
-function storeText(){return "Версия 3. "+(CS?"Данные хранятся в облаке Telegram и доступны с любого вашего устройства.":"Вы открыли страницу не в Telegram: данные хранятся только в этом браузере.")+" Записей: "+ops.length+"."}
+function storeText(){return "Версия "+APP_VERSION+". "+(CS?"Данные хранятся в облаке Telegram и доступны с любого вашего устройства.":"Вы открыли страницу не в Telegram: данные хранятся только в этом браузере.")+" Записей: "+ops.length+"."}
 // Проверка записей: принимаем только ожидаемые поля и форматы
 const TYPES_OK=["income","expense","debt","save"];
 function cleanOp(o){
@@ -608,6 +608,14 @@ $("exportBtn").onclick=async()=>{
 if(TG){try{TG.ready();TG.expand();document.documentElement.dataset.theme=TG.colorScheme==="dark"?"dark":"light";
   TG.onEvent&&TG.onEvent("themeChanged",()=>{document.documentElement.dataset.theme=TG.colorScheme==="dark"?"dark":"light"})}catch(e){}}
 load();
+// ---------- Автообновление: если на GitHub лежит более новая версия, открываем её ----------
+const APP_VERSION="6";
+(async()=>{try{
+  const r=await fetch(location.pathname+"?check="+Date.now(),{cache:"no-store"});if(!r.ok)return;
+  const m=(await r.text()).match(/const APP_VERSION="(\d+)"/);if(!m||m[1]===APP_VERSION)return;
+  const flag="bud_upd_"+m[1];if(sessionStorage.getItem(flag))return;sessionStorage.setItem(flag,"1");
+  location.replace(location.pathname+"?v="+m[1]);
+}catch(e){}})();
 </script>
 </body>
 </html>
